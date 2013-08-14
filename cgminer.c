@@ -2372,13 +2372,17 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 		pool->last_share_time = cgpu->last_share_pool_time;
 		pool->last_share_diff = work->work_difficulty;
 		applog(LOG_DEBUG, "PROOF OF WORK RESULT: true (yay!!!)");
-		if (!QUIET) {
+		if (0 && !QUIET) {
 			if (total_pools > 1)
 				applog(LOG_NOTICE, "Accepted %s %s %d pool %d %s%s",
 				       hashshow, cgpu->drv->name, cgpu->device_id, work->pool->pool_no, resubmit ? "(resubmit)" : "", worktime);
-			else
-				applog(LOG_NOTICE, "Accepted %s %s %d %s%s",
-				       hashshow, cgpu->drv->name, cgpu->device_id, resubmit ? "(resubmit)" : "", worktime);
+			else {
+				unsigned char buf[256];
+				get_statline(buf, cgpu);
+				applog(LOG_NOTICE, "Accepted %s %s %d %s%s %s",
+				       hashshow, cgpu->drv->name, cgpu->device_id, resubmit ? "(resubmit)" : "", worktime,
+					   buf);
+			}
 		}
 		sharelog("accept", work);
 		if (opt_shares && total_accepted >= opt_shares) {

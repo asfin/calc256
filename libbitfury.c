@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "miner.h"
+#include "tm_i2c.h"
 #include "libbitfury.h"
 
 #include "spidevc.h"
@@ -49,6 +50,8 @@
 
 unsigned char enaconf[4] = { 0xc1, 0x6a, 0x59, 0xe3 };
 unsigned char disconf[4] = { 0, 0, 0, 0 };
+
+unsigned decnonce(unsigned in);
 
 /* Configuration registers - control oscillators and such stuff. PROGRAMMED when magic number is matches, UNPROGRAMMED (default) otherwise */
 void config_reg(int cfgreg, int ena)
@@ -75,7 +78,6 @@ char outbuf[16];
 /* Thermal runaway in this case could produce nice flames of chippy fries */
 
 // Thermometer code from left to right - more ones ==> faster clock!
-unsigned char osc6[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x00 };
 
 /* Test vectors to calculate (using address-translated loads) */
 unsigned atrvec[] = {
@@ -121,6 +123,41 @@ static const unsigned SHA_K[64] = {
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
+void t_print(struct timespec d_time) {
+	printf(" %ds %ldms\n", (int)d_time.tv_sec, (long)d_time.tv_nsec / 1000000UL);
+}
+
+
+
+struct  timespec t_add(struct  timespec  time1, struct  timespec  time2) {
+    struct  timespec  result ;
+
+    result.tv_sec = time1.tv_sec + time2.tv_sec ;
+    result.tv_nsec = time1.tv_nsec + time2.tv_nsec ;
+    if (result.tv_nsec >= 1000000000L) {
+        result.tv_sec++ ;  result.tv_nsec = result.tv_nsec - 1000000000L ;
+    }
+
+    return (result) ;
+}
+
+
+
+struct timespec t_diff(struct timespec start, struct timespec end)
+{
+	struct timespec temp;
+	if (end.tv_nsec < start.tv_nsec) {
+		temp.tv_sec = end.tv_sec-start.tv_sec-1;
+		temp.tv_nsec = 1000000000LU;
+		temp.tv_nsec -= start.tv_nsec;
+		temp.tv_nsec += end.tv_nsec;
+	} else {
+		temp.tv_sec = end.tv_sec-start.tv_sec;
+		temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+	}
+	return temp;
+}
+
 void ms3_compute(unsigned *p)
 {
 	unsigned a,b,c,d,e,f,g,h, ne, na,  i;
@@ -137,10 +174,104 @@ void ms3_compute(unsigned *p)
 	p[15] = a; p[14] = b; p[13] = c; p[12] = d; p[11] = e; p[10] = f; p[9] = g; p[8] = h;
 }
 
-int detect_chip(int chip_n) {
+void send_conf() {
+	config_reg(7,0); config_reg(8,0); config_reg(9,0); config_reg(10,0); config_reg(11,0);
+	config_reg(6,0); /* disable OUTSLK */
+	config_reg(4,1); /* Enable slow oscillator */
+	config_reg(1,0); config_reg(2,0); config_reg(3,0);
+	spi_emit_data(0x0100, (void*)counters, 16); /* Program counters correctly for rounds processing, here baby should start consuming power */
+}
+
+void send_init() {
+	/* Prepare internal buffers */
+	/* PREPARE BUFFERS (INITIAL PROGRAMMING) */
 	unsigned w[16];
+	unsigned atrvec[] = {
+		0xb0e72d8e, 0x1dc5b862, 0xe9e7c4a6, 0x3050f1f5, 0x8a1a6b7e, 0x7ec384e8, 0x42c1c3fc, 0x8ed158a1, /* MIDSTATE */
+		0,0,0,0,0,0,0,0,
+		0x8a0bb7b7, 0x33af304f, 0x0b290c1a, 0xf0c4e61f, /* WDATA: hashMerleRoot[7], nTime, nBits, nNonce */
+	};
+
+	ms3_compute(&atrvec[0]);
+	memset(&w, 0, sizeof(w)); w[3] = 0xffffffff; w[4] = 0x80000000; w[15] = 0x00000280;
+	spi_emit_data(0x1000, (void*)w, 16*4);
+	spi_emit_data(0x1400, (void*)w,  8*4);
+	memset(w, 0, sizeof(w)); w[0] = 0x80000000; w[7] = 0x100;
+	spi_emit_data(0x1900, (void*)&w[0],8*4); /* Prepare MS and W buffers! */
+	spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
+}
+
+void send_reinit(int chip_n, int n) {
+	spi_clear_buf();
+	spi_emit_break();
+	spi_emit_fasync(chip_n);
+	set_freq(n);
+	send_conf();
+	send_init();
+	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+}
+
+void send_shutdown(int chip_n) {
+	spi_clear_buf();
+	spi_emit_break();
+	spi_emit_fasync(chip_n);
+	config_reg(4,0); /* Disable slow oscillator */
+	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+}
+
+void set_freq(int bits) {
+	uint64_t freq;
+	unsigned char *osc6;
+	int i;
+
+	osc6 = (unsigned char *)&freq;
+	freq = (1ULL << bits) - 1ULL;
+
+	spi_emit_data(0x6000, (void*)osc6, 8); /* Program internal on-die slow oscillator frequency */
+	config_reg(4,1); /* Enable slow oscillator */
+}
+
+void send_freq(int chip_n, int bits) {
+	spi_clear_buf();
+	spi_emit_break();
+	spi_emit_fasync(chip_n);
+	set_freq(bits);
+	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+}
+
+//void send_divider(int chip, int on) {
+//	spi_clear_buf();
+//	spi_emit_break();
+//	spi_emit_fasync(chip);
+//	config_reg(3,on);
+//	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+//}
+
+unsigned int c_diff(unsigned ocounter, unsigned counter) {
+	return counter >  ocounter ? counter - ocounter : (0x003FFFFF - ocounter) + counter;
+}
+
+int get_counter(unsigned int *newbuf, unsigned int *oldbuf) {
+	int j;
+	unsigned counter;
+	for(j = 0; j < 16; j++) {
+		if (newbuf[j] != oldbuf[j]) {
+			int counter = decnonce(newbuf[j]);
+			if ((counter & 0xFFC00000) == 0xdf800000) {
+				counter -= 0xdf800000;
+				return counter;
+			}
+		}
+	}
+	return 0;
+}
+
+int detect_chip(int chip_n) {
 	int i;
 	unsigned newbuf[17], oldbuf[17];
+	unsigned ocounter;
+	int odiff;
+	struct timespec t1, t2, td;
 
 	memset(newbuf, 0, 17 * 4);
 	memset(oldbuf, 0, 17 * 4);
@@ -154,45 +285,62 @@ int detect_chip(int chip_n) {
 	spi_clear_buf();
 	spi_emit_break(); /* First we want to break chain! Otherwise we'll get all of traffic bounced to output */
 	spi_emit_fasync(chip_n);
-	spi_emit_data(0x6000, (void*)osc6, 8); /* Program internal on-die slow oscillator frequency */
-	config_reg(7,0); config_reg(8,0); config_reg(9,0); config_reg(10,0); config_reg(11,0);
-	config_reg(6,1);
-	config_reg(4,1); /* Enable slow oscillator */
-	config_reg(1,0); config_reg(2,0); config_reg(3,0);
-	spi_emit_data(0x0100, (void*)counters, 16); /* Program counters correctly for rounds processing, here baby should start consuming power */
-
-	/* Prepare internal buffers */
-	/* PREPARE BUFFERS (INITIAL PROGRAMMING) */
-	memset(&w, 0, sizeof(w)); w[3] = 0xffffffff; w[4] = 0x80000000; w[15] = 0x00000280;
-	spi_emit_data(0x1000, (void*)w, 16*4);
-	spi_emit_data(0x1400, (void*)w,  8*4);
-	memset(w, 0, sizeof(w)); w[0] = 0x80000000; w[7] = 0x100;
-	spi_emit_data(0x1900, (void*)&w[0],8*4); /* Prepare MS and W buffers! */
-
-	spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
+	set_freq(52);  //54 - 3F, 53 - 1F
+	send_conf();
+	send_init();
 	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
 
+	ocounter = 0;
 	for (i = 0; i < BITFURY_DETECT_TRIES; i++) {
+		int j;
+		int counter;
+
 		spi_clear_buf();
 		spi_emit_break();
 		spi_emit_fasync(chip_n);
 		spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
 		spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
 		memcpy(newbuf, spi_getrxbuf() + 4 + chip_n, 17*4);
+
+		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
+		counter = get_counter(newbuf, oldbuf);
+		if (ocounter) {
+			unsigned int cdiff = c_diff(ocounter, counter);
+			unsigned per_ms;
+
+			td = t_diff(t2, t1);
+			per_ms = cdiff / (td.tv_nsec / 1000);
+//			printf("AAA cdiff: %d, odiff: %d\n", cdiff, odiff);
+			if (cdiff > 5000 && cdiff < 100000 && odiff > 5000 && odiff < 100000)
+				return 1;
+			odiff = cdiff;
+		}
+		ocounter = counter;
+		t2 = t1;
 		if (newbuf[16] != 0 && newbuf[16] != 0xFFFFFFFF) {
 			return 0;
 		}
-		if (i && newbuf[16] != oldbuf[16])
-			return 1;
-		nmsleep(BITFURY_REFRESH_DELAY);
+		nmsleep(BITFURY_REFRESH_DELAY / 10);
 		memcpy(oldbuf, newbuf, 17 * 4);
 	}
 	return 0;
 }
 
-int libbitfury_detectChips(void) {
+int libbitfury_detectChips(struct bitfury_device *devices) {
 	int n = 0;
 	int detected;
+	int i;
+
+	if (tm_i2c_init() < 0) {
+		printf("I2C init error\n");
+		return(1);
+	}
+
+	for (i = 0; i < 32; i++) {
+		int detected = tm_i2c_detect(i);
+		printf("AAA Slot %d: %d\n", i, detected != -1);
+	}
+
 	do {
 		detected = detect_chip(n);
 		if (detected) {
@@ -201,7 +349,12 @@ int libbitfury_detectChips(void) {
 		} else {
 		}
 	} while (detected);
-	return n;
+	return n; //!!!
+	//return 1;
+}
+
+int libbitfury_shutdownChips(struct bitfury_device *devices) {
+	tm_i2c_close();
 }
 
 unsigned decnonce(unsigned in)
@@ -287,48 +440,238 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 		unsigned *oldbuf = d->oldbuf;
 		struct bitfury_payload *p = &(d->payload);
 		struct bitfury_payload *op = &(d->opayload);
+		struct bitfury_payload *o2p = &(d->o2payload);
+		struct timespec d_time;
+		struct timespec time;
+		int smart = 0;
+		int i;
 
-
-		/* Programming next value */
 		memcpy(atrvec, p, 20*4);
 		ms3_compute(atrvec);
 
-		spi_clear_buf(); spi_emit_break();
-		spi_emit_fasync(chip);
-		spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
-		spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+		clock_gettime(CLOCK_REALTIME, &(time));
 
-		memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
+		if (!second_run) {
+			d->predict2 = d->predict1 = time;
+			printf("AAA FIRST RUN!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+			d->counter1 = d->counter2 = 0;
+			d->req2_done = 0;
+		};
 
-		d->job_switched = newbuf[16] != oldbuf[16];
+		d_time = t_diff(time, d->predict1);
+		if (d_time.tv_sec < 0 && (d->req2_done || !smart)) {
+			d->otimer1 = d->timer1;
+			d->timer1 = time;
+			/* Programming next value */
+			spi_clear_buf(); spi_emit_break();
+			spi_emit_fasync(chip);
+			spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
+			if (smart) {
+				config_reg(3,0);
+			}
+			spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+			memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
+//			printf("AAA LOWspeed REQ 1111: !!!!!!!!!!! counter: %08d \n", get_counter(newbuf, oldbuf));
 
-		if (second_run && d->job_switched) {
-			int i;
-			int results_num = 0;
-			unsigned * results = d->results;
-			for (i = 0; i < 16; i++) {
-				if (oldbuf[i] != newbuf[i]) {
-					unsigned pn; //possible nonce
-					unsigned int s = 0; //TODO zero may be solution
-					pn = decnonce(newbuf[i]);
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn) ? pn : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x400000) ? pn - 0x400000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x800000) ? pn - 0x800000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x400000) ? pn + 0x400000 : 0;
-					if (s) {
-						results[results_num++] = bswap_32(s);
+	//		for (i = 0; i < 17; i++) {
+	//			printf("%08x ", decnonce(newbuf[i]));
+	//		}
+	//		printf("\n");
+
+			d->job_switched = newbuf[16] != oldbuf[16];
+
+//			if(!d->job_switched) {
+//				d->req2_done = 0;
+//				d->predict2 = time;
+//				d->counter2 = 0;
+//			}
+
+			if (1 || d->job_switched) {
+				int i;
+				int results_num = 0;
+				int found = 0;
+				unsigned * results = d->results;
+
+				d->old_nonce = 0;
+				d->future_nonce = 0;
+				for (i = 0; i < 16; i++) {
+					if (oldbuf[i] != newbuf[i] && op && o2p) {
+						unsigned pn; //possible nonce
+						unsigned int s = 0; //TODO zero may be solution
+						unsigned int old_f = 0;
+						if ((newbuf[i] & 0xFF) == 0xE0)
+							continue;
+						pn = decnonce(newbuf[i]);
+						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn) ? pn : 0;
+						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000) ? pn - 0x00400000 : 0;
+						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000) ? pn - 0x00800000 : 0;
+						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000) ? pn + 0x02800000 : 0;
+						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000) ? pn + 0x02C00000 : 0;
+						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000) ? pn + 0x00400000 : 0;
+						if (s) {
+							int k;
+							int dup = 0;
+							for (k = 0; k < results_num; k++) {
+								if (results[k] == bswap_32(s)) {
+									dup = 1;
+								}
+							}
+							if (!dup) {
+								results[results_num++] = bswap_32(s);
+								found++;
+							}
+						}
+
+						s = 0;
+						pn = decnonce(newbuf[i]);
+						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn) ? pn : 0;
+						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
+						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
+						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
+						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
+						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
+						if (s) {
+							d->old_nonce = bswap_32(s);
+							found++;
+						}
+
+						s = 0;
+						pn = decnonce(newbuf[i]);
+						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn) ? pn : 0;
+						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
+						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
+						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
+						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
+						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
+						if (s) {
+							d->future_nonce = bswap_32(s);
+							found++;
+						}
+						if (!found) {
+//							printf("AAA Strange: %08x, chip: %d\n", pn, chip);
+						}
 					}
 				}
-			}
-			d->results_n = results_num;
+				d->results_n = results_num;
 
-			memcpy(op, p, sizeof(struct bitfury_payload));
-			memcpy(oldbuf, newbuf, 17 * 4);
+				if (smart) {
+					d_time = t_diff(d->timer2, d->timer1);
+				} else {
+					d_time = t_diff(d->otimer1, d->timer1);
+				}
+				d->ocounter1 = d->counter1;
+				d->counter1 = get_counter(newbuf, oldbuf);
+				if (d->counter2 || !smart) {
+					int shift;
+					int cycles;
+					int req1_cycles;
+					long long unsigned int period;
+					double ns;
+					unsigned full_cycles, half_cycles;
+					double full_delay, half_delay;
+					long long unsigned delta;
+					struct timespec t_delta;
+					double mhz;
+
+					shift = 400000;
+//					cycles = d->counter1 - d->counter2; // + 0x003FFFFF;
+					if (smart) {
+						cycles = d->counter1 < d->counter2 ? 0x00400000 - d->counter2 + d->counter1 : d->counter1 - d->counter2; // + 0x003FFFFF;
+					} else {
+//						cycles = d->counter1 < d->ocounter1 ? 0x00400000 - d->ocounter1 + d->counter1 : d->counter1 - d->ocounter1; // + 0x003FFFFF;
+						if (d->counter1 > (0x00400000 - shift) && d->ocounter1 > (0x00400000 - shift)) {
+							cycles = 0x00400000 - d->ocounter1 + d->counter1; // + 0x003FFFFF;
+						} else {
+							cycles = d->counter1 - d->ocounter1;
+						}
+					}
+//					cycles = d->counter1 > d->counter2 ? d->counter1 - d->counter2 : 0x003FFFFF - d->counter2 + d->counter1; // + 0x003FFFFF;
+					req1_cycles = 0x003FFFFF - d->counter1;
+					period = (long long unsigned int)d_time.tv_sec * 1000000000ULL + (long long unsigned int)d_time.tv_nsec;
+					ns = (double)period / (double)(cycles);
+					mhz = 1.0 / ns * 65.0 * 1000.0;
+
+//					printf("AAA d->timer1: ");t_print(d->timer1);
+//					printf("AAA d->timer2: ");t_print(d->timer2);
+//					printf("d_time: "); t_print(d_time);
+//					printf("AAA chip %d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", chip, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
+					if (ns > 1000.0 || ns < 20) {
+						ns = 200.0;
+					} else {
+						d->ns = ns;
+						d->mhz = mhz;
+					}
+
+					if (smart) {
+						half_cycles = req1_cycles + shift;
+						full_cycles = 0x003FFFFF - 2 * shift;
+					} else {
+						half_cycles = 0;
+						full_cycles = req1_cycles > shift ? req1_cycles - shift : req1_cycles + 0x00400000 - shift;
+					}
+					half_delay = (double)half_cycles * ns * (1 +0.92);
+					full_delay = (double)full_cycles * ns;
+//					printf("AAA predict1 full_cycles: %08u, half_cycles: %08u\n", full_cycles, half_cycles);
+//					printf("AAA predict1 full_delay: %.2f, half_delay: %.2f\n", full_delay / 1000000000.0, half_delay / 1000000000.0);
+					delta = (long long unsigned)(full_delay + half_delay);
+//					printf("AAA predict1 delta: %llu ms\n", delta / 1000000ULL);
+					t_delta.tv_sec = delta / 1000000000ULL;
+					t_delta.tv_nsec = delta - t_delta.tv_sec * 1000000000ULL;
+					d->predict1 = t_add(time, t_delta);
+
+					if (smart) {
+						half_cycles = req1_cycles + shift;
+						full_cycles = 0;
+					} else {
+						full_cycles = req1_cycles + shift;
+					}
+					half_delay = (double)half_cycles * ns * (1 + 0.92);
+					full_delay = (double)full_cycles * ns;
+					delta = (long long unsigned)(full_delay + half_delay);
+//					printf("AAA predict2 full_cycles: %08u, half_cycles: %08u\n", full_cycles, half_cycles);
+//					printf("AAA predict2 full_delay: %.2f, half_delay: %.2f\n", full_delay / 1000000000.0, half_delay / 1000000000.0);
+//					printf("AAA predict2 delta: %llu ms\n", delta / 1000000ULL);
+
+					t_delta.tv_sec = delta / 1000000000ULL;
+					t_delta.tv_nsec = delta - t_delta.tv_sec * 1000000000ULL;
+					d->predict2 = t_add(time, t_delta);
+					d->req2_done = 0; d->req1_done = 0;
+//					printf("AAA time: "); t_print(time);
+//					printf("AAA d->predict1: "); t_print(d->predict1);
+//					printf("AAA d->predict2: "); t_print(d->predict2);
+				}
+
+				
+				memcpy(o2p, op, sizeof(struct bitfury_payload));
+				memcpy(op, p, sizeof(struct bitfury_payload));
+				memcpy(oldbuf, newbuf, 17 * 4);
+			}
 		}
 
-		nmsleep(BITFURY_REFRESH_DELAY);
+		clock_gettime(CLOCK_REALTIME, &(time));
+		d_time = t_diff(time, d->predict2);
+		if (d_time.tv_sec < 0 && !d->req2_done) {
+//			printf("AAA HIGHSPEED req2: !!!!!!!!! "); t_print(time);
+			if(smart) {
+				d->otimer2 = d->timer2;
+				d->timer2 = time;
+				spi_clear_buf();
+				spi_emit_break();
+				spi_emit_fasync(chip);
+				spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
+				if (smart) {
+					config_reg(3,1);
+				}
+				spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+				memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
+				d->counter2 = get_counter(newbuf, oldbuf);
+
+	//			printf("AAA d->counter2: %08u !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n", d->counter2);
+				d->req2_done = 1;
+			} else {
+				d->req2_done = 1;
+			}
+		}
 	}
 	second_run = 1;
 
