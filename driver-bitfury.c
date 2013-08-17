@@ -45,6 +45,11 @@ static void bitfury_detect(void)
 	int chip_n;
 	int i;
 	struct cgpu_info *bitfury_info;
+
+	bitfury_info = calloc(1, sizeof(struct cgpu_info));
+	bitfury_info->drv = &bitfury_drv;
+	bitfury_info->threads = 1;
+
 	applog(LOG_INFO, "INFO: bitfury_detect");
 	chip_n = libbitfury_detectChips(bitfury_info->devices);
 	if (!chip_n) {
@@ -53,17 +58,9 @@ static void bitfury_detect(void)
 	} else {
 		applog(LOG_WARNING, "BITFURY: %d chips detected!", chip_n);
 	}
-//	chip_n = 1;
-//	send_shutdown(1);
-//	send_shutdown(2);
-//	send_shutdown(3);
 
-	bitfury_info = calloc(1, sizeof(struct cgpu_info));
-	bitfury_info->drv = &bitfury_drv;
-	bitfury_info->threads = 1;
 	bitfury_info->chip_n = chip_n;
 	add_cgpu(bitfury_info);
-	exit(0);
 }
 
 static uint32_t bitfury_checkNonce(struct work *work, uint32_t nonce)
@@ -90,16 +87,9 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	chip_n = thr->cgpu->chip_n;
 
 	if (!first) {
-		devices[0].osc6_bits = 54;
-		devices[1].osc6_bits = 52;
-		devices[2].osc6_bits = 52;
-		devices[3].osc6_bits = 54;
-		devices[4].osc6_bits = 54;
-		devices[5].osc6_bits = 54;
-		devices[6].osc6_bits = 54;
-		devices[7].osc6_bits = 52;
 		for (i = 0; i < chip_n; i++) {
-			send_reinit(i, devices[i].osc6_bits);
+			devices[i].osc6_bits = 54;
+			send_reinit(devices[i].slot, devices[i].fasync, devices[i].osc6_bits);
 			printf("AAA send_freq: %d\n", devices[i].osc6_bits);
 		}
 	}
@@ -170,9 +160,9 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			sprintf(line + strlen(line), "%.1f|%.0f ", shares_to_ghashes(shares_found, short_stat), devices[chip].mhz);
 			if(short_out_t && !shares_found) {
 //				printf("AAA chip %d REINIT!!!!!!!!!\n", chip);
-				send_freq(chip, devices[chip].osc6_bits - 1);
+				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
 				nmsleep(10);
-				send_freq(chip, devices[chip].osc6_bits);
+				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
 			}
 			shares_total += shares_found;
 			shares_first += chip < 4 ? shares_found : 0;
@@ -244,11 +234,7 @@ static void bitfury_shutdown(struct thr_info *thr)
 	chip_n = thr->cgpu->chip_n;
 
 	applog(LOG_INFO, "INFO bitfury_shutdown");
-	applog(LOG_WARNING, "AAA INFO bitfury_shutdown");
-	for (i = 0; i < chip_n; i++) {
-		send_shutdown(i);
-	}
-	libbitfury_shutdownChips(thr->cgpu->devices);
+	libbitfury_shutdownChips(thr->cgpu->devices, chip_n);
 }
 
 static void bitfury_disable(struct thr_info *thr)

@@ -124,7 +124,7 @@ static const unsigned SHA_K[64] = {
 };
 
 void t_print(struct timespec d_time) {
-	printf(" %ds %ldms\n", (int)d_time.tv_sec, (long)d_time.tv_nsec / 1000000UL);
+	printf(" %ds %.2fms\n", (int)d_time.tv_sec, (double)d_time.tv_nsec / 1000000.0);
 }
 
 
@@ -201,22 +201,26 @@ void send_init() {
 	spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
 }
 
-void send_reinit(int chip_n, int n) {
+void send_reinit(int slot, int chip_n, int n) {
 	spi_clear_buf();
 	spi_emit_break();
 	spi_emit_fasync(chip_n);
 	set_freq(n);
 	send_conf();
 	send_init();
+	tm_i2c_set_oe(slot);
 	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+	tm_i2c_clear_oe(slot);
 }
 
-void send_shutdown(int chip_n) {
+void send_shutdown(int slot, int chip_n) {
 	spi_clear_buf();
 	spi_emit_break();
 	spi_emit_fasync(chip_n);
 	config_reg(4,0); /* Disable slow oscillator */
+	tm_i2c_set_oe(slot);
 	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+	tm_i2c_clear_oe(slot);
 }
 
 void set_freq(int bits) {
@@ -231,21 +235,15 @@ void set_freq(int bits) {
 	config_reg(4,1); /* Enable slow oscillator */
 }
 
-void send_freq(int chip_n, int bits) {
+void send_freq(int slot, int chip_n, int bits) {
 	spi_clear_buf();
 	spi_emit_break();
 	spi_emit_fasync(chip_n);
 	set_freq(bits);
+	tm_i2c_set_oe(slot);
 	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+	tm_i2c_clear_oe(slot);
 }
-
-//void send_divider(int chip, int on) {
-//	spi_clear_buf();
-//	spi_emit_break();
-//	spi_emit_fasync(chip);
-//	config_reg(3,on);
-//	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
-//}
 
 unsigned int c_diff(unsigned ocounter, unsigned counter) {
 	return counter >  ocounter ? counter - ocounter : (0x003FFFFF - ocounter) + counter;
@@ -328,32 +326,56 @@ int detect_chip(int chip_n) {
 
 int libbitfury_detectChips(struct bitfury_device *devices) {
 	int n = 0;
-	int detected;
 	int i;
+	static slot_on[32];
+	struct timespec t1, t2;
 
 	if (tm_i2c_init() < 0) {
 		printf("I2C init error\n");
 		return(1);
 	}
 
+
+	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
 	for (i = 0; i < 32; i++) {
-		int detected = tm_i2c_detect(i);
-		printf("AAA Slot %d: %d\n", i, detected != -1);
+		int slot_detected = tm_i2c_detect(i) != -1;
+		slot_on[i] = slot_detected;
+		printf("AAA Slot %d: %d\n", i, slot_detected);
+		tm_i2c_clear_oe(i);
+		nmsleep(1);
 	}
 
-	do {
-		detected = detect_chip(n);
-		if (detected) {
-			n++;
-		applog(LOG_WARNING, "BITFURY chip #%d detected", n);
-		} else {
+	for (i = 0; i < 32; i++) {
+		if (slot_on[i]) {
+			int chip_n = 0;
+			int chip_detected;
+			tm_i2c_set_oe(i);
+			do {
+				chip_detected = detect_chip(chip_n);
+				if (chip_detected) {
+					applog(LOG_WARNING, "BITFURY slot: %d, chip #%d detected", i, n);
+					devices[n].slot = i;
+					devices[n].fasync = chip_n;
+					n++;
+					chip_n++;
+				}
+			} while (chip_detected);
+			tm_i2c_clear_oe(i);
 		}
-	} while (detected);
+	}
+
+	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
+	printf("AAA i2c detect\n"); t_print(t_diff(t1, t2));
+
 	return n; //!!!
 	//return 1;
 }
 
-int libbitfury_shutdownChips(struct bitfury_device *devices) {
+int libbitfury_shutdownChips(struct bitfury_device *devices, int chip_n) {
+	int i;
+	for (i = 0; i < chip_n; i++) {
+		send_shutdown(devices[i].slot, devices[i].fasync);
+	}
 	tm_i2c_close();
 }
 
@@ -430,12 +452,12 @@ void work_to_payload(struct bitfury_payload *p, struct work *w) {
 }
 
 int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
-	int chip;
+	int chip_id;
 	static unsigned second_run;
 
-	for (chip = 0; chip < chip_n; chip++) {
+	for (chip_id = 0; chip_id < chip_n; chip_id++) {
 		unsigned char *hexstr;
-		struct bitfury_device *d = bf + chip;
+		struct bitfury_device *d = bf + chip_id;
 		unsigned *newbuf = d->newbuf;
 		unsigned *oldbuf = d->oldbuf;
 		struct bitfury_payload *p = &(d->payload);
@@ -445,6 +467,8 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 		struct timespec time;
 		int smart = 0;
 		int i;
+		int chip = d->fasync;
+		int slot = d->slot;
 
 		memcpy(atrvec, p, 20*4);
 		ms3_compute(atrvec);
@@ -469,7 +493,9 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 			if (smart) {
 				config_reg(3,0);
 			}
+			tm_i2c_set_oe(slot);
 			spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+			tm_i2c_clear_oe(slot);
 			memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
 //			printf("AAA LOWspeed REQ 1111: !!!!!!!!!!! counter: %08d \n", get_counter(newbuf, oldbuf));
 
@@ -662,7 +688,9 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 				if (smart) {
 					config_reg(3,1);
 				}
+				tm_i2c_set_oe(slot);
 				spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+				tm_i2c_clear_oe(slot);
 				memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
 				d->counter2 = get_counter(newbuf, oldbuf);
 
