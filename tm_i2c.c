@@ -99,3 +99,8 @@ void tm_i2c_clear_oe(unsigned char slot) {
 	tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + slot, TM_SET_OE, 1);
 }
 
+unsigned char tm_i2c_slot2addr(unsigned char slot) {
+	if (slot < 0 || slot > 31) return 0;
+	return ((TM_ADDR >> 1) + slot);
+}
+
