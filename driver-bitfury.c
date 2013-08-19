@@ -154,23 +154,45 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 
 	if (now.tv_sec - short_out_t > short_stat) {
 		int shares_first = 0, shares_last = 0, shares_total = 0;
-		sprintf(line, "SHORT stat %ds: ", short_stat);
+		char stat_lines[32][256] = {0};
+		int len, k;
+		double gh[32][8] = {0};
+		double ghsum = 0, gh1h = 0, gh2h = 0;
+
 		for (chip = 0; chip < chip_n; chip++) {
 			int shares_found = calc_stat(devices[chip].stat_ts, short_stat, now);
-			sprintf(line + strlen(line), "%.1f|%.0f ", shares_to_ghashes(shares_found, short_stat), devices[chip].mhz);
+			len = strlen(stat_lines[devices[chip].slot]);
+			gh[devices[chip].slot][chip & 0x07] = shares_to_ghashes(shares_found, short_stat);
+			snprintf(stat_lines[devices[chip].slot] + len, 256 - len, "%.1f|%3.0f ", gh[devices[chip].slot][chip & 0x07], devices[chip].mhz);
+
 			if(short_out_t && !shares_found) {
-//				printf("AAA chip %d REINIT!!!!!!!!!\n", chip);
-				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
-				nmsleep(10);
-				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
+				printf("AAA chip %d REINIT!!!!!!!!!\n", chip);
+				send_reinit(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
+
+				//send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
+				//nmsleep(10);
+				//send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
 			}
 			shares_total += shares_found;
 			shares_first += chip < 4 ? shares_found : 0;
 			shares_last += chip > 3 ? shares_found : 0;
 		}
-		sprintf(line + strlen(line), "| 1st half: %.2f, 2nd half: %.2f, total: %.2fGhashes/s", shares_to_ghashes(shares_first, short_stat),
-			shares_to_ghashes(shares_last, short_stat), shares_to_ghashes(shares_total, short_stat));
+		sprintf(line, "vvvvwww SHORT stat %ds: wwwvvvv", short_stat);
 		applog(LOG_WARNING, line);
+		for(i = 0; i < 32; i++)
+			if(strlen(stat_lines[i])) {
+				len = strlen(stat_lines[i]);
+				ghsum = 0;
+				gh1h = 0;
+				gh2h = 0;
+				for(k = 0; k < 4; k++) {
+					gh1h += gh[i][k];
+					gh2h += gh[i][k+4];
+					ghsum += gh[i][k] + gh[i][k+4];
+				}
+				snprintf(stat_lines[i] + len, 256 - len, "- %2.1f + %2.1f = %2.1f slot %i ", gh1h, gh2h, ghsum, i);
+				applog(LOG_WARNING, stat_lines[i]);
+			}
 		short_out_t = now.tv_sec;
 	}
 
