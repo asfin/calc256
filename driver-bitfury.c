@@ -74,12 +74,14 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	int chip_n;
 	int chip;
 	uint64_t hashes = 0;
-	static time_t short_out_t;
-	static time_t long_out_t;
 	struct timeval now;
 	unsigned char line[256];
-	int short_stat = 6;
-	int long_stat = 600;
+	int short_stat = 7;
+	static time_t short_out_t;
+	int long_stat = 30;
+	static time_t long_out_t;
+	int long_long_stat = 60 * 30;
+	static time_t long_long_out_t;
 	static first = 0; //TODO Move to detect()
 	int i;
 
@@ -166,12 +168,10 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			snprintf(stat_lines[devices[chip].slot] + len, 256 - len, "%.1f|%3.0f ", gh[devices[chip].slot][chip & 0x07], devices[chip].mhz);
 
 			if(short_out_t && !shares_found) {
-				printf("AAA chip %d REINIT!!!!!!!!!\n", chip);
-				send_reinit(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
-
-				//send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
-				//nmsleep(10);
-				//send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
+				printf("AAA chip %d FREQ CHANGE\n", chip);
+				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
+				nmsleep(10);
+				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
 			}
 			shares_total += shares_found;
 			shares_first += chip < 4 ? shares_found : 0;
@@ -201,6 +201,10 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 		sprintf(line, "!_____ LONG stat %ds: ", long_stat);
 		for (chip = 0; chip < chip_n; chip++) {
 			int shares_found = calc_stat(devices[chip].stat_ts, long_stat, now);
+			if(long_out_t && !shares_found) {
+				printf("AAA chip %d REINIT!!!!!!!!!\n", chip);
+				send_reinit(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
+			}
 			sprintf(line + strlen(line), " %.2f(%.2fmhz), ", shares_to_ghashes(shares_found, long_stat), devices[chip].mhz);
 			if (chip == 3) sprintf(line + strlen(line), "\n\t\t\t");
 			shares_total += shares_found;
@@ -211,6 +215,23 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			shares_to_ghashes(shares_last, long_stat), shares_to_ghashes(shares_total, long_stat));
 		applog(LOG_WARNING, line);
 		long_out_t = now.tv_sec;
+	}
+
+	if (now.tv_sec - long_long_out_t > long_long_stat) {
+		int shares_first = 0, shares_last = 0, shares_total = 0;
+		sprintf(line, "!_____ LONG stat %ds: ", long_long_stat);
+		for (chip = 0; chip < chip_n; chip++) {
+			int shares_found = calc_stat(devices[chip].stat_ts, long_long_stat, now);
+			sprintf(line + strlen(line), " %.2f(%.2fmhz), ", shares_to_ghashes(shares_found, long_long_stat), devices[chip].mhz);
+			if (chip == 3) sprintf(line + strlen(line), "\n\t\t\t");
+			shares_total += shares_found;
+			shares_first += chip < 4 ? shares_found : 0;
+			shares_last += chip > 3 ? shares_found : 0;
+		}
+		sprintf(line + strlen(line), "\n\t\t\t| 1st half: %.2f, 2nd half: %.2f, total: %.2fGhashes/s", shares_to_ghashes(shares_first, long_long_stat),
+			shares_to_ghashes(shares_last, long_long_stat), shares_to_ghashes(shares_total, long_long_stat));
+		applog(LOG_WARNING, line);
+		long_long_out_t = now.tv_sec;
 	}
 
 	return hashes;

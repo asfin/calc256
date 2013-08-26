@@ -201,6 +201,18 @@ void send_init() {
 	spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
 }
 
+void set_freq(int bits) {
+	uint64_t freq;
+	unsigned char *osc6;
+	int i;
+
+	osc6 = (unsigned char *)&freq;
+	freq = (1ULL << bits) - 1ULL;
+
+	spi_emit_data(0x6000, (void*)osc6, 8); /* Program internal on-die slow oscillator frequency */
+	config_reg(4,1); /* Enable slow oscillator */
+}
+
 void send_reinit(int slot, int chip_n, int n) {
 	spi_clear_buf();
 	spi_emit_break();
@@ -221,18 +233,6 @@ void send_shutdown(int slot, int chip_n) {
 	tm_i2c_set_oe(slot);
 	spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
 	tm_i2c_clear_oe(slot);
-}
-
-void set_freq(int bits) {
-	uint64_t freq;
-	unsigned char *osc6;
-	int i;
-
-	osc6 = (unsigned char *)&freq;
-	freq = (1ULL << bits) - 1ULL;
-
-	spi_emit_data(0x6000, (void*)osc6, 8); /* Program internal on-die slow oscillator frequency */
-	config_reg(4,1); /* Enable slow oscillator */
 }
 
 void send_freq(int slot, int chip_n, int bits) {
@@ -410,8 +410,20 @@ int rehash(unsigned char *midstate, unsigned m7,
 	unsigned int *mid32 = (unsigned int *)midstate;
 	unsigned out32[8];
 	unsigned char *out = (unsigned char *) out32;
+	static unsigned history[512];
+	static unsigned history_p;
 	int i;
 	sha2_context ctx;
+
+
+	for (i = 0; i < 512; i++) {
+		if (history[i] == nnonce) {
+//			printf("AAA found dup: %08x\n", nnonce);
+			return 0;
+		}
+	}
+	history[history_p] = nnonce;
+	history_p++; history_p &= 512 - 1;
 
 	memset( &ctx, 0, sizeof( sha2_context ) );
 	memcpy(ctx.state, mid32, 8*4);
