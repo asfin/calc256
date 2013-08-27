@@ -489,7 +489,6 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 
 		if (!second_run) {
 			d->predict2 = d->predict1 = time;
-			printf("AAA FIRST RUN!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
 			d->counter1 = d->counter2 = 0;
 			d->req2_done = 0;
 		};
@@ -506,6 +505,8 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 				config_reg(3,0);
 			}
 			tm_i2c_set_oe(slot);
+			clock_gettime(CLOCK_REALTIME, &(time));
+			d_time = t_diff(time, d->predict1);
 			spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
 			tm_i2c_clear_oe(slot);
 			memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
@@ -632,7 +633,8 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 //					printf("AAA d->timer1: ");t_print(d->timer1);
 //					printf("AAA d->timer2: ");t_print(d->timer2);
 //					printf("d_time: "); t_print(d_time);
-//					printf("AAA chip %d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", chip, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
+					if (d->counter1 > 0 && d->counter1 < shift * 4)
+						printf("AAA chip_id %2d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", chip_id, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
 					if (ns > 1000.0 || ns < 20) {
 						ns = 200.0;
 					} else {

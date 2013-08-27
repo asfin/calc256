@@ -75,10 +75,10 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	int chip;
 	uint64_t hashes = 0;
 	struct timeval now;
-	unsigned char line[256];
-	int short_stat = 7;
+	unsigned char line[2048];
+	int short_stat = 14;
 	static time_t short_out_t;
-	int long_stat = 30;
+	int long_stat = 60;
 	static time_t long_out_t;
 	int long_long_stat = 60 * 30;
 	static time_t long_long_out_t;
@@ -90,9 +90,8 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 
 	if (!first) {
 		for (i = 0; i < chip_n; i++) {
-			devices[i].osc6_bits = 54;
+			devices[i].osc6_bits = 40;
 			send_reinit(devices[i].slot, devices[i].fasync, devices[i].osc6_bits);
-			printf("AAA send_freq: %d\n", devices[i].osc6_bits);
 		}
 	}
 	first = 1;
