@@ -146,6 +146,7 @@ int spi_txrx(const char *wrbuf, char *rdbuf, int bufsz)
         }
 
 	close(fd);
+	spi_reset();
 
 	return 0;
 }
