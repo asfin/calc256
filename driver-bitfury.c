@@ -90,7 +90,7 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 
 	if (!first) {
 		for (i = 0; i < chip_n; i++) {
-			devices[i].osc6_bits = 40;
+			devices[i].osc6_bits = 54;
 			send_reinit(devices[i].slot, devices[i].fasync, devices[i].osc6_bits);
 		}
 	}
@@ -134,6 +134,8 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 					//submit_nonce(thr, owork, bswap_32(res[j]));
 				}
 			}
+			devices[chip].results_n = 0;
+			devices[chip].job_switched = 0;
 			if (devices[chip].old_nonce && o2work) {
 					submit_nonce(thr, o2work, bswap_32(devices[chip].old_nonce));
 					i++;

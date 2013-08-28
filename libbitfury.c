@@ -418,12 +418,10 @@ int rehash(unsigned char *midstate, unsigned m7,
 
 	for (i = 0; i < 512; i++) {
 		if (history[i] == nnonce) {
-//			printf("AAA found dup: %08x\n", nnonce);
+			printf("AAA found dup: %08x\n", nnonce);
 			return 0;
 		}
 	}
-	history[history_p] = nnonce;
-	history_p++; history_p &= 512 - 1;
 
 	memset( &ctx, 0, sizeof( sha2_context ) );
 	memcpy(ctx.state, mid32, 8*4);
@@ -443,7 +441,9 @@ int rehash(unsigned char *midstate, unsigned m7,
 	if (out32[7] == 0) {
 		hex = bin2hex(midstate, 32);
 		hex = bin2hex(out, 32);
-		applog(LOG_INFO, "! MS0: %08x, m7: %08x, ntime: %08x, nbits: %08x, nnonce: %08x\n\t\t\t out: %s\n", mid32[0], m7, ntime, nbits, nnonce, hex);
+//		applog(LOG_INFO, "! MS0: %08x, m7: %08x, ntime: %08x, nbits: %08x, nnonce: %08x\n\t\t\t out: %s\n", mid32[0], m7, ntime, nbits, nnonce, hex);
+		history[history_p] = nnonce;
+		history_p++; history_p &= 512 - 1;
 		return 1;
 	}
 	return 0;
@@ -459,8 +459,6 @@ void work_to_payload(struct bitfury_payload *p, struct work *w) {
 	p->m7 = bswap_32(*(unsigned *)(flipped_data + 64));
 	p->ntime = bswap_32(*(unsigned *)(flipped_data + 68));
 	p->nbits = bswap_32(*(unsigned *)(flipped_data + 72));
-	applog(LOG_INFO, "INFO nonc: %08x bitfury_scanHash MS0: %08x, ", p->nnonce, ((unsigned int *)w->midstate)[0]);
-	applog(LOG_INFO, "INFO merkle[7]: %08x, ntime: %08x, nbits: %08x", p->m7, p->ntime, p->nbits);
 }
 
 int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
@@ -525,163 +523,153 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 //				d->counter2 = 0;
 //			}
 
-			if (1 || d->job_switched) {
-				int i;
-				int results_num = 0;
-				int found = 0;
-				unsigned * results = d->results;
+			int i;
+			int results_num = 0;
+			int found = 0;
+			unsigned * results = d->results;
 
-				d->old_nonce = 0;
-				d->future_nonce = 0;
-				for (i = 0; i < 16; i++) {
-					if (oldbuf[i] != newbuf[i] && op && o2p) {
-						unsigned pn; //possible nonce
-						unsigned int s = 0; //TODO zero may be solution
-						unsigned int old_f = 0;
-						if ((newbuf[i] & 0xFF) == 0xE0)
-							continue;
-						pn = decnonce(newbuf[i]);
-						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn) ? pn : 0;
-						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000) ? pn - 0x00400000 : 0;
-						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000) ? pn - 0x00800000 : 0;
-						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000) ? pn + 0x02800000 : 0;
-						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000) ? pn + 0x02C00000 : 0;
-						s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000) ? pn + 0x00400000 : 0;
-						if (s) {
-							int k;
-							int dup = 0;
-							for (k = 0; k < results_num; k++) {
-								if (results[k] == bswap_32(s)) {
-									dup = 1;
-								}
-							}
-							if (!dup) {
-								results[results_num++] = bswap_32(s);
-								found++;
+			d->old_nonce = 0;
+			d->future_nonce = 0;
+			for (i = 0; i < 16; i++) {
+				if (oldbuf[i] != newbuf[i] && op && o2p) {
+					unsigned pn; //possible nonce
+					unsigned int s = 0; //TODO zero may be solution
+					unsigned int old_f = 0;
+					if ((newbuf[i] & 0xFF) == 0xE0)
+						continue;
+					pn = decnonce(newbuf[i]);
+					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn) ? pn : 0;
+					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000) ? pn - 0x00400000 : 0;
+					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000) ? pn - 0x00800000 : 0;
+					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000) ? pn + 0x02800000 : 0;
+					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000) ? pn + 0x02C00000 : 0;
+					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000) ? pn + 0x00400000 : 0;
+					if (s) {
+						int k;
+						int dup = 0;
+						for (k = 0; k < results_num; k++) {
+							if (results[k] == bswap_32(s)) {
+								dup = 1;
 							}
 						}
-
-						s = 0;
-						pn = decnonce(newbuf[i]);
-						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn) ? pn : 0;
-						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
-						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
-						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
-						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
-						s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
-						if (s) {
-							d->old_nonce = bswap_32(s);
+						if (!dup) {
+							results[results_num++] = bswap_32(s);
 							found++;
-						}
-
-						s = 0;
-						pn = decnonce(newbuf[i]);
-						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn) ? pn : 0;
-						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
-						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
-						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
-						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
-						s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
-						if (s) {
-							d->future_nonce = bswap_32(s);
-							found++;
-						}
-						if (!found) {
-//							printf("AAA Strange: %08x, chip: %d\n", pn, chip);
 						}
 					}
+
+					s = 0;
+					pn = decnonce(newbuf[i]);
+					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn) ? pn : 0;
+					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
+					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
+					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
+					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
+					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
+					if (s) {
+						d->old_nonce = bswap_32(s);
+						found++;
+					}
+
+					s = 0;
+					pn = decnonce(newbuf[i]);
+					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn) ? pn : 0;
+					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
+					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
+					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
+					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
+					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
+					if (s) {
+						d->future_nonce = bswap_32(s);
+						found++;
+					}
+					if (!found) {
+						printf("AAA Strange: %08x, chip_id: %d\n", pn, chip_id);
+					}
 				}
-				d->results_n = results_num;
+			}
+			d->results_n = results_num;
+
+			if (smart) {
+				d_time = t_diff(d->timer2, d->timer1);
+			} else {
+				d_time = t_diff(d->otimer1, d->timer1);
+			}
+			d->ocounter1 = d->counter1;
+			d->counter1 = get_counter(newbuf, oldbuf);
+			if (d->counter2 || !smart) {
+				int shift;
+				int cycles;
+				int req1_cycles;
+				long long unsigned int period;
+				double ns;
+				unsigned full_cycles, half_cycles;
+				double full_delay, half_delay;
+				long long unsigned delta;
+				struct timespec t_delta;
+				double mhz;
+
+				shift = 400000;
+//				cycles = d->counter1 - d->counter2; // + 0x003FFFFF;
+				if (smart) {
+					cycles = d->counter1 < d->counter2 ? 0x00400000 - d->counter2 + d->counter1 : d->counter1 - d->counter2; // + 0x003FFFFF;
+				} else {
+//					cycles = d->counter1 < d->ocounter1 ? 0x00400000 - d->ocounter1 + d->counter1 : d->counter1 - d->ocounter1; // + 0x003FFFFF;
+					if (d->counter1 > (0x00400000 - shift) && d->ocounter1 > (0x00400000 - shift)) {
+						cycles = 0x00400000 - d->ocounter1 + d->counter1; // + 0x003FFFFF;
+					} else {
+						cycles = d->counter1 - d->ocounter1;
+					}
+				}
+//				cycles = d->counter1 > d->counter2 ? d->counter1 - d->counter2 : 0x003FFFFF - d->counter2 + d->counter1; // + 0x003FFFFF;
+				req1_cycles = 0x003FFFFF - d->counter1;
+				period = (long long unsigned int)d_time.tv_sec * 1000000000ULL + (long long unsigned int)d_time.tv_nsec;
+				ns = (double)period / (double)(cycles);
+				mhz = 1.0 / ns * 65.0 * 1000.0;
+
+//				printf("AAA d->timer1: ");t_print(d->timer1);
+//				printf("AAA d->timer2: ");t_print(d->timer2);
+//				printf("d_time: "); t_print(d_time);
+				if (d->counter1 > 0 && d->counter1 < shift * 4)
+					printf("AAA chip_id %2d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", chip_id, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
+				if (ns > 1000.0 || ns < 20) {
+					ns = 200.0;
+				} else {
+					d->ns = ns;
+					d->mhz = mhz;
+				}
 
 				if (smart) {
-					d_time = t_diff(d->timer2, d->timer1);
+					half_cycles = req1_cycles + shift;
+					full_cycles = 0x003FFFFF - 2 * shift;
 				} else {
-					d_time = t_diff(d->otimer1, d->timer1);
+					half_cycles = 0;
+					full_cycles = req1_cycles > shift ? req1_cycles - shift : req1_cycles + 0x00400000 - shift;
 				}
-				d->ocounter1 = d->counter1;
-				d->counter1 = get_counter(newbuf, oldbuf);
-				if (d->counter2 || !smart) {
-					int shift;
-					int cycles;
-					int req1_cycles;
-					long long unsigned int period;
-					double ns;
-					unsigned full_cycles, half_cycles;
-					double full_delay, half_delay;
-					long long unsigned delta;
-					struct timespec t_delta;
-					double mhz;
+				half_delay = (double)half_cycles * ns * (1 +0.92);
+				full_delay = (double)full_cycles * ns;
+				delta = (long long unsigned)(full_delay + half_delay);
+				t_delta.tv_sec = delta / 1000000000ULL;
+				t_delta.tv_nsec = delta - t_delta.tv_sec * 1000000000ULL;
+				d->predict1 = t_add(time, t_delta);
 
-					shift = 400000;
-//					cycles = d->counter1 - d->counter2; // + 0x003FFFFF;
-					if (smart) {
-						cycles = d->counter1 < d->counter2 ? 0x00400000 - d->counter2 + d->counter1 : d->counter1 - d->counter2; // + 0x003FFFFF;
-					} else {
-//						cycles = d->counter1 < d->ocounter1 ? 0x00400000 - d->ocounter1 + d->counter1 : d->counter1 - d->ocounter1; // + 0x003FFFFF;
-						if (d->counter1 > (0x00400000 - shift) && d->ocounter1 > (0x00400000 - shift)) {
-							cycles = 0x00400000 - d->ocounter1 + d->counter1; // + 0x003FFFFF;
-						} else {
-							cycles = d->counter1 - d->ocounter1;
-						}
-					}
-//					cycles = d->counter1 > d->counter2 ? d->counter1 - d->counter2 : 0x003FFFFF - d->counter2 + d->counter1; // + 0x003FFFFF;
-					req1_cycles = 0x003FFFFF - d->counter1;
-					period = (long long unsigned int)d_time.tv_sec * 1000000000ULL + (long long unsigned int)d_time.tv_nsec;
-					ns = (double)period / (double)(cycles);
-					mhz = 1.0 / ns * 65.0 * 1000.0;
-
-//					printf("AAA d->timer1: ");t_print(d->timer1);
-//					printf("AAA d->timer2: ");t_print(d->timer2);
-//					printf("d_time: "); t_print(d_time);
-					if (d->counter1 > 0 && d->counter1 < shift * 4)
-						printf("AAA chip_id %2d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", chip_id, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
-					if (ns > 1000.0 || ns < 20) {
-						ns = 200.0;
-					} else {
-						d->ns = ns;
-						d->mhz = mhz;
-					}
-
-					if (smart) {
-						half_cycles = req1_cycles + shift;
-						full_cycles = 0x003FFFFF - 2 * shift;
-					} else {
-						half_cycles = 0;
-						full_cycles = req1_cycles > shift ? req1_cycles - shift : req1_cycles + 0x00400000 - shift;
-					}
-					half_delay = (double)half_cycles * ns * (1 +0.92);
-					full_delay = (double)full_cycles * ns;
-//					printf("AAA predict1 full_cycles: %08u, half_cycles: %08u\n", full_cycles, half_cycles);
-//					printf("AAA predict1 full_delay: %.2f, half_delay: %.2f\n", full_delay / 1000000000.0, half_delay / 1000000000.0);
-					delta = (long long unsigned)(full_delay + half_delay);
-//					printf("AAA predict1 delta: %llu ms\n", delta / 1000000ULL);
-					t_delta.tv_sec = delta / 1000000000ULL;
-					t_delta.tv_nsec = delta - t_delta.tv_sec * 1000000000ULL;
-					d->predict1 = t_add(time, t_delta);
-
-					if (smart) {
-						half_cycles = req1_cycles + shift;
-						full_cycles = 0;
-					} else {
-						full_cycles = req1_cycles + shift;
-					}
-					half_delay = (double)half_cycles * ns * (1 + 0.92);
-					full_delay = (double)full_cycles * ns;
-					delta = (long long unsigned)(full_delay + half_delay);
-//					printf("AAA predict2 full_cycles: %08u, half_cycles: %08u\n", full_cycles, half_cycles);
-//					printf("AAA predict2 full_delay: %.2f, half_delay: %.2f\n", full_delay / 1000000000.0, half_delay / 1000000000.0);
-//					printf("AAA predict2 delta: %llu ms\n", delta / 1000000ULL);
-
-					t_delta.tv_sec = delta / 1000000000ULL;
-					t_delta.tv_nsec = delta - t_delta.tv_sec * 1000000000ULL;
-					d->predict2 = t_add(time, t_delta);
-					d->req2_done = 0; d->req1_done = 0;
-//					printf("AAA time: "); t_print(time);
-//					printf("AAA d->predict1: "); t_print(d->predict1);
-//					printf("AAA d->predict2: "); t_print(d->predict2);
+				if (smart) {
+					half_cycles = req1_cycles + shift;
+					full_cycles = 0;
+				} else {
+					full_cycles = req1_cycles + shift;
 				}
+				half_delay = (double)half_cycles * ns * (1 + 0.92);
+				full_delay = (double)full_cycles * ns;
+				delta = (long long unsigned)(full_delay + half_delay);
 
-				
+				t_delta.tv_sec = delta / 1000000000ULL;
+				t_delta.tv_nsec = delta - t_delta.tv_sec * 1000000000ULL;
+				d->predict2 = t_add(time, t_delta);
+				d->req2_done = 0; d->req1_done = 0;
+			}
+
+			if (d->job_switched) {
 				memcpy(o2p, op, sizeof(struct bitfury_payload));
 				memcpy(op, p, sizeof(struct bitfury_payload));
 				memcpy(oldbuf, newbuf, 17 * 4);
@@ -691,7 +679,6 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 		clock_gettime(CLOCK_REALTIME, &(time));
 		d_time = t_diff(time, d->predict2);
 		if (d_time.tv_sec < 0 && !d->req2_done) {
-//			printf("AAA HIGHSPEED req2: !!!!!!!!! "); t_print(time);
 			if(smart) {
 				d->otimer2 = d->timer2;
 				d->timer2 = time;
@@ -708,7 +695,6 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 				memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
 				d->counter2 = get_counter(newbuf, oldbuf);
 
-	//			printf("AAA d->counter2: %08u !!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n", d->counter2);
 				d->req2_done = 1;
 			} else {
 				d->req2_done = 1;
