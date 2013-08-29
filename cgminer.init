@@ -1,0 +1,107 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          cgminer
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: cgminer bitfury mining software
+# Description:       Cgminer is customized miner that work with bitfury chips
+#                    
+### END INIT INFO
+# -*- coding: utf-8 -*-
+# Debian init.d script for CGMINER
+# 
+# Copyright © 2003 Colin Walters <walters@debian.org>
+# Copyright © 2005 Sjoerd Simons <sjoerd@debian.org>
+# Copyright © 2013 legkodymov <legko777@fastmail.fm>
+
+set -e
+
+DAEMON=/usr/local/bin/cgminer
+NAME=cgminer
+DAEMONUSER=root
+PIDDIR=/var/run/cgminer
+PIDFILE=$PIDDIR/pid
+DESC="cgminer"
+
+
+/usr/bin/printenv > /home/pi/env.txt
+
+test -x $DAEMON || exit 0
+
+. /lib/lsb/init-functions
+
+# Source defaults file; edit that file to configure this script.
+PARAMS="-c /home/pi/.cgminer/cgminer.conf"
+if [ -e /etc/default/cgminer ]; then
+  . /etc/default/cgminer
+fi
+
+
+start_it_up()
+{
+  if [ ! -d $PIDDIR ]; then
+    mkdir -p $PIDDIR
+    chown $DAEMONUSER $PIDDIR
+    chgrp $DAEMONUSER $PIDDIR
+  fi
+
+  if ! mountpoint -q /proc/ ; then
+    log_failure_msg "Can't start $DESC - /proc is not mounted"
+    return
+  fi
+
+  if [ -e $PIDFILE ]; then
+    if $0 status > /dev/null ; then
+      log_success_msg "$DESC already started; not starting."
+      return
+    else
+      log_success_msg "Removing stale PID file $PIDFILE."
+      rm -f $PIDFILE
+    fi
+  fi
+
+  log_daemon_msg "Starting $DESC" "$NAME"
+  /usr/bin/cgserial.py
+  start-stop-daemon --start --make-pidfile --pidfile $PIDFILE \
+    --user $DAEMONUSER --verbose --exec /usr/bin/nohup $DAEMON -- $PARAMS 2>&1 > /var/log/cgminer.log &
+  log_end_msg $?
+}
+
+shut_it_down()
+{
+  log_daemon_msg "Stopping $DESC" "$NAME"
+  start-stop-daemon --stop --retry 5 --oknodo --pidfile $PIDFILE \
+    --user $DAEMONUSER -v
+  # We no longer include these arguments so that start-stop-daemon
+  # can do its job even given that we may have been upgraded.
+  # We rely on the pidfile being sanely managed
+  # --exec $DAEMON -- --system $PARAMS
+  log_end_msg $?
+  rm -f $PIDFILE
+}
+
+case "$1" in
+  start)
+    start_it_up
+  ;;
+  stop)
+    shut_it_down
+  ;;
+  reload|force-reload)
+    reload_it
+  ;;
+  restart)
+    shut_it_down
+    start_it_up
+  ;;
+  status)
+    status_of_proc -p $PIDFILE $DAEMON $NAME && exit 0 || exit $?
+    ;;
+  *)
+    echo "Usage: /etc/init.d/$NAME {start|stop|restart|force-reload|status}" >&2
+    exit 2
+  ;;
+esac
+

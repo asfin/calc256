@@ -76,9 +76,9 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	uint64_t hashes = 0;
 	struct timeval now;
 	unsigned char line[2048];
-	int short_stat = 14;
+	int short_stat = 10;
 	static time_t short_out_t;
-	int long_stat = 60;
+	int long_stat = 1800;
 	static time_t long_out_t;
 	int long_long_stat = 60 * 30;
 	static time_t long_long_out_t;
@@ -91,6 +91,8 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	if (!first) {
 		for (i = 0; i < chip_n; i++) {
 			devices[i].osc6_bits = 54;
+		}
+		for (i = 0; i < chip_n; i++) {
 			send_reinit(devices[i].slot, devices[i].fasync, devices[i].osc6_bits);
 		}
 	}
@@ -164,14 +166,16 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 
 		for (chip = 0; chip < chip_n; chip++) {
 			int shares_found = calc_stat(devices[chip].stat_ts, short_stat, now);
+			double ghash;
 			len = strlen(stat_lines[devices[chip].slot]);
-			gh[devices[chip].slot][chip & 0x07] = shares_to_ghashes(shares_found, short_stat);
-			snprintf(stat_lines[devices[chip].slot] + len, 256 - len, "%.1f|%3.0f ", gh[devices[chip].slot][chip & 0x07], devices[chip].mhz);
+			ghash = shares_to_ghashes(shares_found, short_stat);
+			gh[devices[chip].slot][chip & 0x07] = ghash;
+			snprintf(stat_lines[devices[chip].slot] + len, 256 - len, "%.1f-%3.0f ", ghash, devices[chip].mhz);
 
-			if(short_out_t && !shares_found) {
-				printf("AAA chip %d FREQ CHANGE\n", chip);
+			if(short_out_t && ghash < 1.0) {
+//				printf("AAA chip %d FREQ CHANGE\n", chip);
 				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
-				nmsleep(10);
+				nmsleep(1);
 				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
 			}
 			shares_total += shares_found;
@@ -199,40 +203,46 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 
 	if (now.tv_sec - long_out_t > long_stat) {
 		int shares_first = 0, shares_last = 0, shares_total = 0;
-		sprintf(line, "!_____ LONG stat %ds: ", long_stat);
+		char stat_lines[32][256] = {0};
+		int len, k;
+		double gh[32][8] = {0};
+		double ghsum = 0, gh1h = 0, gh2h = 0;
+
 		for (chip = 0; chip < chip_n; chip++) {
 			int shares_found = calc_stat(devices[chip].stat_ts, long_stat, now);
-			if(long_out_t && !shares_found) {
-				printf("AAA chip %d REINIT!!!!!!!!!\n", chip);
-				send_reinit(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
-			}
-			sprintf(line + strlen(line), " %.2f(%.2fmhz), ", shares_to_ghashes(shares_found, long_stat), devices[chip].mhz);
-			if (chip == 3) sprintf(line + strlen(line), "\n\t\t\t");
-			shares_total += shares_found;
-			shares_first += chip < 4 ? shares_found : 0;
-			shares_last += chip > 3 ? shares_found : 0;
-		}
-		sprintf(line + strlen(line), "\n\t\t\t| 1st half: %.2f, 2nd half: %.2f, total: %.2fGhashes/s", shares_to_ghashes(shares_first, long_stat),
-			shares_to_ghashes(shares_last, long_stat), shares_to_ghashes(shares_total, long_stat));
-		applog(LOG_WARNING, line);
-		long_out_t = now.tv_sec;
-	}
+			double ghash;
+			len = strlen(stat_lines[devices[chip].slot]);
+			ghash = shares_to_ghashes(shares_found, long_stat);
+			gh[devices[chip].slot][chip & 0x07] = ghash;
+			snprintf(stat_lines[devices[chip].slot] + len, 256 - len, "%.1f-%3.0f ", ghash, devices[chip].mhz);
 
-	if (now.tv_sec - long_long_out_t > long_long_stat) {
-		int shares_first = 0, shares_last = 0, shares_total = 0;
-		sprintf(line, "!_____ LONG stat %ds: ", long_long_stat);
-		for (chip = 0; chip < chip_n; chip++) {
-			int shares_found = calc_stat(devices[chip].stat_ts, long_long_stat, now);
-			sprintf(line + strlen(line), " %.2f(%.2fmhz), ", shares_to_ghashes(shares_found, long_long_stat), devices[chip].mhz);
-			if (chip == 3) sprintf(line + strlen(line), "\n\t\t\t");
+			if(long_out_t && ghash < 1.0) {
+				printf("AAA chip %d FREQ CHANGE\n", chip);
+				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
+				nmsleep(10);
+				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
+			}
 			shares_total += shares_found;
 			shares_first += chip < 4 ? shares_found : 0;
 			shares_last += chip > 3 ? shares_found : 0;
 		}
-		sprintf(line + strlen(line), "\n\t\t\t| 1st half: %.2f, 2nd half: %.2f, total: %.2fGhashes/s", shares_to_ghashes(shares_first, long_long_stat),
-			shares_to_ghashes(shares_last, long_long_stat), shares_to_ghashes(shares_total, long_long_stat));
+		sprintf(line, "!!!_________ LONG stat %ds: ___________!!!", long_stat);
 		applog(LOG_WARNING, line);
-		long_long_out_t = now.tv_sec;
+		for(i = 0; i < 32; i++)
+			if(strlen(stat_lines[i])) {
+				len = strlen(stat_lines[i]);
+				ghsum = 0;
+				gh1h = 0;
+				gh2h = 0;
+				for(k = 0; k < 4; k++) {
+					gh1h += gh[i][k];
+					gh2h += gh[i][k+4];
+					ghsum += gh[i][k] + gh[i][k+4];
+				}
+				snprintf(stat_lines[i] + len, 256 - len, "- %2.1f + %2.1f = %2.1f slot %i ", gh1h, gh2h, ghsum, i);
+				applog(LOG_WARNING, stat_lines[i]);
+			}
+		long_out_t = now.tv_sec;
 	}
 
 	return hashes;

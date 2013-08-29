@@ -416,12 +416,12 @@ int rehash(unsigned char *midstate, unsigned m7,
 	sha2_context ctx;
 
 
-	for (i = 0; i < 512; i++) {
-		if (history[i] == nnonce) {
-			printf("AAA found dup: %08x\n", nnonce);
-			return 0;
-		}
-	}
+//	for (i = 0; i < 512; i++) {
+//		if (history[i] == nnonce) {
+//			printf("AAA found dup: %08x\n", nnonce);
+//			return 0;
+//		}
+//	}
 
 	memset( &ctx, 0, sizeof( sha2_context ) );
 	memcpy(ctx.state, mid32, 8*4);
@@ -442,8 +442,8 @@ int rehash(unsigned char *midstate, unsigned m7,
 		hex = bin2hex(midstate, 32);
 		hex = bin2hex(out, 32);
 //		applog(LOG_INFO, "! MS0: %08x, m7: %08x, ntime: %08x, nbits: %08x, nnonce: %08x\n\t\t\t out: %s\n", mid32[0], m7, ntime, nbits, nnonce, hex);
-		history[history_p] = nnonce;
-		history_p++; history_p &= 512 - 1;
+//		history[history_p] = nnonce;
+//		history_p++; history_p &= 512 - 1;
 		return 1;
 	}
 	return 0;
@@ -608,31 +608,29 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 				long long unsigned delta;
 				struct timespec t_delta;
 				double mhz;
+				int ccase;
 
-				shift = 400000;
-//				cycles = d->counter1 - d->counter2; // + 0x003FFFFF;
+				shift = 800000;
 				if (smart) {
 					cycles = d->counter1 < d->counter2 ? 0x00400000 - d->counter2 + d->counter1 : d->counter1 - d->counter2; // + 0x003FFFFF;
 				} else {
-//					cycles = d->counter1 < d->ocounter1 ? 0x00400000 - d->ocounter1 + d->counter1 : d->counter1 - d->ocounter1; // + 0x003FFFFF;
-					if (d->counter1 > (0x00400000 - shift) && d->ocounter1 > (0x00400000 - shift)) {
+					if (d->counter1 > (0x00400000 - shift * 2) && d->ocounter1 > (0x00400000 - shift)) {
 						cycles = 0x00400000 - d->ocounter1 + d->counter1; // + 0x003FFFFF;
+						ccase = 1;
 					} else {
 						cycles = d->counter1 - d->ocounter1;
+						ccase = 2;
 					}
 				}
-//				cycles = d->counter1 > d->counter2 ? d->counter1 - d->counter2 : 0x003FFFFF - d->counter2 + d->counter1; // + 0x003FFFFF;
 				req1_cycles = 0x003FFFFF - d->counter1;
 				period = (long long unsigned int)d_time.tv_sec * 1000000000ULL + (long long unsigned int)d_time.tv_nsec;
 				ns = (double)period / (double)(cycles);
 				mhz = 1.0 / ns * 65.0 * 1000.0;
 
-//				printf("AAA d->timer1: ");t_print(d->timer1);
-//				printf("AAA d->timer2: ");t_print(d->timer2);
-//				printf("d_time: "); t_print(d_time);
-				if (d->counter1 > 0 && d->counter1 < shift * 4)
+				if (d->counter1 > 0 && d->counter1 < 0x001FFFFF)
 					printf("AAA chip_id %2d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", chip_id, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
-				if (ns > 1000.0 || ns < 20) {
+				if (ns > 2000.0 || ns < 20) {
+					printf("AAA %d!Stupid ns chip_id %2d: %llu ms, req1_cycles: %08u,  counter1: %08d, ocounter1: %08d, counter2: %08d, cycles: %08d, ns: %.2f, mhz: %.2f \n", ccase, chip_id, period / 1000000ULL, req1_cycles, d->counter1, d->ocounter1, d->counter2, cycles, ns, mhz);
 					ns = 200.0;
 				} else {
 					d->ns = ns;
